@@ -2,16 +2,22 @@
 // It is the only place that ever touches your secret API key.
 
 export default async function handler(req, res) {
-  // Only allow POST requests
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
-  // Allow requests from your app (CORS). For now this allows any origin —
-  // once your app has a real domain, you can lock this down to just that domain.
+  // Set CORS headers FIRST, before any other logic — so even the browser's
+  // pre-flight OPTIONS check succeeds.
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  // Browsers send an OPTIONS request first to ask permission — answer it
+  // immediately with no content.
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  // Only allow POST requests for the real call
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
   try {
     const { messages, profile } = req.body;
