@@ -1,0 +1,8 @@
+{
+  "name": "pathfinder-backend",
+  "version": "1.0.0",
+  "description": "Backend server for the Pathfinder app. Holds the Anthropic API key safely and calls Claude with web search on behalf of the app.",
+  "scripts": {
+    "dev": "vercel dev"
+  }
+}
