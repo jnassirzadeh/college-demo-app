@@ -1,0 +1,984 @@
+import React, { useState, useRef, useEffect } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  StyleSheet,
+  SafeAreaView,
+  Modal,
+  KeyboardAvoidingView,
+  Platform,
+} from "react-native";
+import {
+  MessageCircle,
+  Map as MapIcon,
+  Sparkles,
+  Send,
+  ChevronRight,
+  CheckCircle2,
+  Circle,
+  Compass,
+} from "lucide-react-native";
+
+// ============ CONFIG ============
+// Replace with your deployed backend URL (the one ending in /api/mentor)
+const BACKEND_URL = "https://college-demo-app.vercel.app/api/mentor";
+const ROADMAP_URL = "https://college-demo-app.vercel.app/api/roadmap";
+
+const COLORS = {
+  bg: "#FFFBF5",
+  outerBg: "#F0EBE0",
+  ink: "#1A1A2E",
+  muted: "#6B6B7B",
+  faint: "#A8A8B5",
+  border: "#EFEAE0",
+  borderStrong: "#E8E2D6",
+  coral: "#FF6B4A",
+  coralLight: "#FFF3EE",
+  green: "#2D6A4F",
+  yellow: "#FFD23F",
+  white: "#FFFFFF",
+};
+
+const GRADE_LABELS = ["Freshman", "Sophomore", "Junior", "Senior"];
+
+// Fallback roadmap used only if AI generation fails (e.g. no internet, server error)
+const FALLBACK_ROADMAP = {
+  Freshman: [
+    { id: "f1", title: "Try 2–3 clubs or activities", detail: "No need to commit yet — this year is for exploring what actually interests you." },
+    { id: "f2", title: "Build a habit of strong grades", detail: "Freshman grades count too. Aim for consistency, not perfection." },
+    { id: "f3", title: "Meet your school counselor", detail: "Introduce yourself early so they know your name by junior year." },
+  ],
+  Sophomore: [
+    { id: "s1", title: "Go deeper on 1–2 activities", detail: "Start trading breadth for depth — colleges notice follow-through." },
+    { id: "s2", title: "Take a practice PSAT/SAT", detail: "Low stakes — just to see where you're starting from." },
+    { id: "s3", title: "Start a 'brag list'", detail: "Jot down anything you're proud of, as it happens. Future-you will thank you." },
+  ],
+  Junior: [
+    { id: "j1", title: "Take the SAT/ACT", detail: "Most students test in the spring of junior year, sometimes twice." },
+    { id: "j2", title: "Narrow your college list", detail: "Mix of reach, target, and safety schools based on your profile." },
+    { id: "j3", title: "Start thinking about your story", detail: "What do you want admissions officers to understand about you?" },
+    { id: "j4", title: "Visit a few campuses if you can", detail: "Even local college visits help you figure out what you like." },
+  ],
+  Senior: [
+    { id: "sr1", title: "Finalize your college list", detail: "Lock in where you're applying, and note every deadline." },
+    { id: "sr2", title: "Write your essays", detail: "Start early — your first draft will not be your best draft." },
+    { id: "sr3", title: "Submit applications", detail: "Triple-check deadlines. Early Decision/Action is often in Nov." },
+    { id: "sr4", title: "Acceptance day", detail: "This is what it's all been building to. You've got this." },
+  ],
+};
+
+const GRADE_COLORS = {
+  Freshman: COLORS.green,
+  Sophomore: COLORS.coral,
+  Junior: "#D4A017",
+  Senior: COLORS.ink,
+};
+
+// ============ Backend call ============
+async function askMentor(messages, profile) {
+  const response = await fetch(BACKEND_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      profile,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || "Server error");
+  }
+  return data.reply || "Hmm, I didn't catch that — could you try asking again?";
+}
+
+// Generates a personalized roadmap for this specific student via the backend.
+// Adds stable ids to each milestone (the AI only returns title/detail).
+async function generateRoadmap(profile) {
+  const response = await fetch(ROADMAP_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ profile }),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.roadmap) {
+    throw new Error(data.error || "Failed to generate roadmap");
+  }
+
+  const withIds = {};
+  for (const grade of GRADE_LABELS) {
+    const milestones = data.roadmap[grade] || [];
+    withIds[grade] = milestones.map((m, i) => ({
+      id: `${grade.slice(0, 2).toLowerCase()}${i}`,
+      title: m.title,
+      detail: m.detail,
+    }));
+  }
+  return { roadmap: withIds, summary: data.summary || "" };
+}
+
+// ============ Onboarding ============
+function Onboarding({ onComplete }) {
+  const [step, setStep] = useState(0);
+  const [name, setName] = useState("");
+  const [grade, setGrade] = useState("");
+  const [city, setCity] = useState("");
+  const [school, setSchool] = useState("");
+  const [fieldDirection, setFieldDirection] = useState("");
+  const [interests, setInterests] = useState("");
+  const [activities, setActivities] = useState([]);
+  const [academicLevel, setAcademicLevel] = useState("");
+  const [ambitionLevel, setAmbitionLevel] = useState("");
+  const [dreamSchools, setDreamSchools] = useState("");
+
+  function toggleActivity(a) {
+    setActivities((prev) => (prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a]));
+  }
+
+  const steps = [
+    {
+      key: "name",
+      title: "What's your name?",
+      sub: "So your mentor knows what to call you.",
+      valid: name.trim().length > 0,
+      content: (
+        <TextInput
+          autoFocus
+          value={name}
+          onChangeText={setName}
+          placeholder="Type your name"
+          style={styles.input}
+          placeholderTextColor={COLORS.faint}
+        />
+      ),
+    },
+    {
+      key: "grade",
+      title: `Nice to meet you, ${name || "friend"}.`,
+      sub: "What grade are you in right now?",
+      valid: !!grade,
+      content: (
+        <View style={{ gap: 10 }}>
+          {GRADE_LABELS.map((g) => (
+            <TouchableOpacity
+              key={g}
+              onPress={() => setGrade(g)}
+              style={[
+                styles.choiceButton,
+                grade === g && { borderColor: COLORS.coral, backgroundColor: COLORS.coralLight },
+              ]}
+            >
+              <Text style={styles.choiceButtonText}>{g}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ),
+    },
+    {
+      key: "location",
+      title: "Where are you located?",
+      sub: "This helps your mentor find real clubs, volunteer programs, and opportunities near you.",
+      valid: city.trim().length > 0,
+      content: (
+        <View style={{ gap: 12 }}>
+          <TextInput
+            autoFocus
+            value={city}
+            onChangeText={setCity}
+            placeholder="City, State (e.g. Burbank, CA)"
+            style={styles.input}
+            placeholderTextColor={COLORS.faint}
+          />
+          <TextInput
+            value={school}
+            onChangeText={setSchool}
+            placeholder="School name (optional)"
+            style={styles.input}
+            placeholderTextColor={COLORS.faint}
+          />
+        </View>
+      ),
+    },
+    {
+      key: "fieldDirection",
+      title: "What field excites you most?",
+      sub: "Pick the closest fit — we'll get more specific next.",
+      valid: !!fieldDirection,
+      content: (
+        <View style={{ gap: 10 }}>
+          {["Engineering & Tech", "Medicine & Health", "Business & Finance", "Arts & Design", "Science & Research", "Humanities & Law", "Undecided"].map((f) => (
+            <TouchableOpacity
+              key={f}
+              onPress={() => setFieldDirection(f)}
+              style={[
+                styles.choiceButton,
+                fieldDirection === f && { borderColor: COLORS.coral, backgroundColor: COLORS.coralLight },
+              ]}
+            >
+              <Text style={styles.choiceButtonText}>{f}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ),
+    },
+    {
+      key: "interests",
+      title: "Get a bit more specific.",
+      sub: "Within that field, what topics or activities pull you in? This helps your roadmap fit you exactly.",
+      valid: true,
+      content: (
+        <TextInput
+          autoFocus
+          value={interests}
+          onChangeText={setInterests}
+          placeholder={
+            fieldDirection === "Engineering & Tech" ? "e.g. robotics, coding, video games..." :
+            fieldDirection === "Medicine & Health" ? "e.g. biology, psychology, nursing..." :
+            fieldDirection === "Arts & Design" ? "e.g. photography, painting, fashion..." :
+            "e.g. writing, soccer, debate, biology..."
+          }
+          style={[styles.input, { height: 90, textAlignVertical: "top" }]}
+          placeholderTextColor={COLORS.faint}
+          multiline
+        />
+      ),
+    },
+    {
+      key: "activities",
+      title: "What are you already doing?",
+      sub: "Select all that apply — so we suggest next steps, not things you've already done.",
+      valid: true,
+      content: (
+        <View style={{ gap: 10 }}>
+          {["Sports", "Music or Arts", "Academic clubs (Debate, Math, etc.)", "Volunteering", "Part-time job", "Student government", "None yet"].map((a) => (
+            <TouchableOpacity
+              key={a}
+              onPress={() => toggleActivity(a)}
+              style={[
+                styles.choiceButton,
+                activities.includes(a) && { borderColor: COLORS.coral, backgroundColor: COLORS.coralLight },
+              ]}
+            >
+              <Text style={styles.choiceButtonText}>{a}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ),
+    },
+    {
+      key: "academicLevel",
+      title: "How are your grades going?",
+      sub: "Be honest — this just helps frame realistic, useful advice.",
+      valid: !!academicLevel,
+      content: (
+        <View style={{ gap: 10 }}>
+          {["Mostly A's", "Mostly A's and B's", "Mixed grades", "Still figuring it out"].map((g) => (
+            <TouchableOpacity
+              key={g}
+              onPress={() => setAcademicLevel(g)}
+              style={[
+                styles.choiceButton,
+                academicLevel === g && { borderColor: COLORS.coral, backgroundColor: COLORS.coralLight },
+              ]}
+            >
+              <Text style={styles.choiceButtonText}>{g}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ),
+    },
+    {
+      key: "ambitionLevel",
+      title: "What's your college mindset?",
+      sub: "No wrong answer — this just shapes how we talk about schools.",
+      valid: !!ambitionLevel,
+      content: (
+        <View style={{ gap: 10 }}>
+          {["I have specific dream schools", "I want a great school, but I'm flexible", "I'm not thinking about that yet"].map((a) => (
+            <TouchableOpacity
+              key={a}
+              onPress={() => setAmbitionLevel(a)}
+              style={[
+                styles.choiceButton,
+                ambitionLevel === a && { borderColor: COLORS.coral, backgroundColor: COLORS.coralLight },
+              ]}
+            >
+              <Text style={styles.choiceButtonText}>{a}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ),
+    },
+    ...(ambitionLevel === "I have specific dream schools" ? [{
+      key: "dreamSchools",
+      title: "Which schools?",
+      sub: "List as many as you want — separated by commas.",
+      valid: true,
+      content: (
+        <TextInput
+          autoFocus
+          value={dreamSchools}
+          onChangeText={setDreamSchools}
+          placeholder="e.g. Stanford, MIT, UCLA"
+          style={styles.input}
+          placeholderTextColor={COLORS.faint}
+        />
+      ),
+    }] : []),
+  ];
+
+  const safeStep = Math.min(step, steps.length - 1);
+  const current = steps[safeStep];
+  const isLast = safeStep === steps.length - 1;
+
+  // If the steps array shrank (e.g. ambitionLevel changed away from "specific dream schools"
+  // while sitting on that step) and our index is now out of range, snap back safely.
+  useEffect(() => {
+    if (step > steps.length - 1) {
+      setStep(steps.length - 1);
+    }
+  }, [steps.length]);
+
+  return (
+    <SafeAreaView style={[styles.screenBase, { justifyContent: "center" }]}>
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <View style={{ paddingHorizontal: 28 }}>
+          <View style={{ flexDirection: "row", gap: 6, marginBottom: 36 }}>
+            {steps.map((s, i) => (
+              <View
+                key={s.key}
+                style={{
+                  height: 4,
+                  flex: 1,
+                  borderRadius: 2,
+                  backgroundColor: i <= safeStep ? COLORS.coral : COLORS.borderStrong,
+                }}
+              />
+            ))}
+          </View>
+          <Compass size={28} color={COLORS.coral} style={{ marginBottom: 14 }} />
+          <Text style={styles.h1}>{current.title}</Text>
+          <Text style={styles.sub}>{current.sub}</Text>
+          <View style={{ marginTop: 4 }}>{current.content}</View>
+          <TouchableOpacity
+            onPress={() => {
+              if (isLast) {
+                onComplete({ name, grade, city, school, fieldDirection, interests, activities, academicLevel, ambitionLevel, dreamSchools });
+              } else {
+                setStep(safeStep + 1);
+              }
+            }}
+            disabled={!current.valid}
+            style={[styles.primaryButton, { marginTop: 24, opacity: current.valid ? 1 : 0.4 }]}
+          >
+            <Text style={styles.primaryButtonText}>{isLast ? "Start my journey" : "Continue"}</Text>
+            <ChevronRight size={18} color={COLORS.white} />
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+// ============ Research / Building Trail Screen ============
+function buildResearchSteps(profile) {
+  const field = profile.fieldDirection || "your interests";
+  const place = profile.school || profile.city || "your area";
+  return [
+    `Reading through your profile, ${profile.name}...`,
+    `Searching for ${field.toLowerCase()} clubs near ${place}...`,
+    `Looking into competitions and programs in ${field.toLowerCase()}...`,
+    `Checking volunteer opportunities near ${profile.city}...`,
+    `Mapping out your four-year trail...`,
+    `Putting it all together...`,
+  ];
+}
+
+function ResearchScreen({ profile, onComplete }) {
+  const [stepIndex, setStepIndex] = useState(0);
+  const [error, setError] = useState(null);
+  const steps = buildResearchSteps(profile);
+
+  useEffect(() => {
+    // Cycle through display messages while the real request runs in the background
+    const interval = setInterval(() => {
+      setStepIndex((i) => Math.min(i + 1, steps.length - 1));
+    }, 2200);
+
+    generateRoadmap(profile)
+      .then((result) => {
+        clearInterval(interval);
+        onComplete(result);
+      })
+      .catch((e) => {
+        clearInterval(interval);
+        setError(e.message);
+      });
+
+    return () => clearInterval(interval);
+  }, []);
+
+  if (error) {
+    return (
+      <SafeAreaView style={[styles.screenBase, { justifyContent: "center", alignItems: "center", padding: 28 }]}>
+        <Text style={[styles.h2, { textAlign: "center", marginBottom: 8 }]}>Hmm, that didn't work</Text>
+        <Text style={[styles.detailText, { textAlign: "center" }]}>
+          We couldn't reach the research service. We'll start you off with a general trail instead — you can always ask your mentor for personalized suggestions anytime.
+        </Text>
+        <TouchableOpacity
+          style={[styles.primaryButton, { marginTop: 12, paddingHorizontal: 24 }]}
+          onPress={() => onComplete({ roadmap: FALLBACK_ROADMAP, summary: "" })}
+        >
+          <Text style={styles.primaryButtonText}>Continue anyway</Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={[styles.screenBase, { justifyContent: "center", alignItems: "center", padding: 28 }]}>
+      <Compass size={32} color={COLORS.coral} style={{ marginBottom: 20 }} />
+      <Text style={[styles.h1, { textAlign: "center", fontSize: 22 }]}>Building your trail</Text>
+      <Text style={[styles.detailText, { textAlign: "center", marginTop: 8, marginBottom: 28 }]}>
+        {steps[stepIndex]}
+      </Text>
+      <View style={{ flexDirection: "row", gap: 6 }}>
+        {steps.map((_, i) => (
+          <View
+            key={i}
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 4,
+              backgroundColor: i <= stepIndex ? COLORS.coral : COLORS.borderStrong,
+            }}
+          />
+        ))}
+      </View>
+    </SafeAreaView>
+  );
+}
+
+// ============ Trail Map ============
+function TrailMap({ profile, completed, setCompleted, setSelectedMilestone, roadmap, summary }) {
+  const currentGradeIdx = GRADE_LABELS.indexOf(profile.grade);
+
+  return (
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: 100 }}>
+      <View style={{ marginBottom: 28 }}>
+        <Text style={styles.eyebrow}>YOUR TRAIL</Text>
+        <Text style={styles.h1}>{profile.name}'s path to acceptance day</Text>
+        {!!summary && <Text style={[styles.detailText, { marginTop: 8, marginBottom: 0 }]}>{summary}</Text>}
+      </View>
+
+      {GRADE_LABELS.map((grade, gi) => {
+        const isCurrent = gi === currentGradeIdx;
+        const isFuture = gi > currentGradeIdx;
+        const isPast = gi < currentGradeIdx;
+        const color = GRADE_COLORS[grade];
+
+        return (
+          <View key={grade} style={{ flexDirection: "row" }}>
+            {/* Trail line + node column */}
+            <View style={{ width: 24, alignItems: "center" }}>
+              <View
+                style={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: 12,
+                  backgroundColor: isFuture ? COLORS.white : color,
+                  borderWidth: 3,
+                  borderColor: isFuture ? COLORS.borderStrong : color,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                {isCurrent && <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.white }} />}
+              </View>
+              {gi < GRADE_LABELS.length - 1 && (
+                <View
+                  style={{
+                    width: 3,
+                    flex: 1,
+                    backgroundColor: isPast || isCurrent ? color : COLORS.borderStrong,
+                    marginTop: 2,
+                  }}
+                />
+              )}
+            </View>
+
+            {/* Content column */}
+            <View style={{ flex: 1, marginLeft: 14, marginBottom: 22, opacity: isFuture ? 0.6 : 1 }}>
+              <Text style={[styles.h2, { color: isFuture ? COLORS.faint : COLORS.ink, marginBottom: 10 }]}>
+                {grade}
+                {isCurrent && <Text style={{ fontSize: 12, color, fontWeight: "700" }}>  · YOU ARE HERE</Text>}
+              </Text>
+
+              {(roadmap[grade] || []).map((m) => {
+                const done = completed.has(m.id);
+                return (
+                  <TouchableOpacity
+                    key={m.id}
+                    onPress={() => setSelectedMilestone({ ...m, grade, color })}
+                    style={styles.milestoneCard}
+                  >
+                    {done ? <CheckCircle2 size={20} color={color} /> : <Circle size={20} color="#D8D2C4" />}
+                    <Text
+                      style={[
+                        styles.milestoneText,
+                        done && { textDecorationLine: "line-through" },
+                      ]}
+                    >
+                      {m.title}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
+function MilestoneSheet({ milestone, completed, setCompleted, onClose, onAskMentor }) {
+  if (!milestone) return null;
+  const done = completed.has(milestone.id);
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={onClose}>
+        <TouchableOpacity activeOpacity={1} style={styles.modalSheet}>
+          <View style={styles.modalHandle} />
+          <Text style={[styles.eyebrow, { color: milestone.color }]}>{milestone.grade.toUpperCase()}</Text>
+          <Text style={styles.h2}>{milestone.title}</Text>
+          <Text style={styles.detailText}>{milestone.detail}</Text>
+          <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
+            <TouchableOpacity
+              onPress={() =>
+                setCompleted((prev) => {
+                  const next = new Set(prev);
+                  if (done) next.delete(milestone.id);
+                  else next.add(milestone.id);
+                  return next;
+                })
+              }
+              style={[
+                styles.primaryButton,
+                { flex: 1, backgroundColor: done ? COLORS.white : milestone.color, borderWidth: done ? 1 : 0, borderColor: COLORS.borderStrong },
+              ]}
+            >
+              <Text style={[styles.primaryButtonText, { color: done ? COLORS.ink : COLORS.white }]}>
+                {done ? "Mark as not done" : "Mark as done"}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => onAskMentor(milestone.title)}
+              style={[styles.primaryButton, { flex: 1, backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.borderStrong }]}
+            >
+              <Text style={[styles.primaryButtonText, { color: COLORS.ink }]}>Ask mentor</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </TouchableOpacity>
+    </Modal>
+  );
+}
+
+// ============ Lightweight Markdown Renderer ============
+// Hand-rolled, no external dependency — avoids compatibility issues with
+// unmaintained packages on newer React/React Native versions.
+// Supports: **bold**, bullet lines (- or *), numbered lines, plain paragraphs.
+
+function renderInlineBold(line, baseStyle) {
+  const parts = line.split(/(\*\*[^*]+\*\*)/g).filter((p) => p.length > 0);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <Text key={i} style={[baseStyle, { fontWeight: "700" }]}>
+          {part.slice(2, -2)}
+        </Text>
+      );
+    }
+    return <Text key={i} style={baseStyle}>{part}</Text>;
+  });
+}
+
+function SimpleMarkdown({ text }) {
+  if (!text) return null;
+  const lines = text.split("\n");
+  const baseStyle = { color: COLORS.ink, fontSize: 14.5, lineHeight: 21 };
+
+  return (
+    <View>
+      {lines.map((line, i) => {
+        const trimmed = line.trim();
+        if (trimmed === "") {
+          return <View key={i} style={{ height: 6 }} />;
+        }
+        const bulletMatch = trimmed.match(/^[-*]\s+(.*)/);
+        const numberedMatch = trimmed.match(/^(\d+)\.\s+(.*)/);
+        const headingMatch = trimmed.match(/^#{1,3}\s+(.*)/);
+
+        if (headingMatch) {
+          return (
+            <Text key={i} style={{ fontSize: 16.5, fontWeight: "700", color: COLORS.ink, marginTop: 4, marginBottom: 4 }}>
+              {renderInlineBold(headingMatch[1], { fontSize: 16.5, fontWeight: "700", color: COLORS.ink })}
+            </Text>
+          );
+        }
+        if (bulletMatch) {
+          return (
+            <View key={i} style={{ flexDirection: "row", marginBottom: 4, paddingLeft: 4 }}>
+              <Text style={{ color: COLORS.coral, marginRight: 6, fontSize: 14.5 }}>•</Text>
+              <Text style={[baseStyle, { flex: 1 }]}>{renderInlineBold(bulletMatch[1], baseStyle)}</Text>
+            </View>
+          );
+        }
+        if (numberedMatch) {
+          return (
+            <View key={i} style={{ flexDirection: "row", marginBottom: 4, paddingLeft: 4 }}>
+              <Text style={{ color: COLORS.coral, marginRight: 6, fontSize: 14.5, fontWeight: "700" }}>{numberedMatch[1]}.</Text>
+              <Text style={[baseStyle, { flex: 1 }]}>{renderInlineBold(numberedMatch[2], baseStyle)}</Text>
+            </View>
+          );
+        }
+        return (
+          <Text key={i} style={[baseStyle, { marginBottom: 6 }]}>
+            {renderInlineBold(trimmed, baseStyle)}
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
+
+// ============ Mentor Chat ============
+function MentorChat({ profile, messages, setMessages, pendingPrompt, clearPendingPrompt }) {
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+  }, [messages, loading]);
+
+  useEffect(() => {
+    if (pendingPrompt) {
+      send(pendingPrompt);
+      clearPendingPrompt();
+    }
+  }, [pendingPrompt]);
+
+  async function send(text) {
+    const content = (text ?? input).trim();
+    if (!content || loading) return;
+    const userMsg = { role: "user", content };
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
+    setInput("");
+    setLoading(true);
+    try {
+      const reply = await askMentor(newMessages, profile);
+      setMessages((m) => [...m, { role: "assistant", content: reply }]);
+    } catch (e) {
+      setMessages((m) => [...m, { role: "assistant", content: "Sorry, I had trouble responding — try again in a moment." }]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <View style={{ padding: 20, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+        <Text style={styles.eyebrow}>YOUR MENTOR</Text>
+        <Text style={[styles.h1, { fontSize: 22 }]}>Ask me anything</Text>
+      </View>
+
+      <ScrollView ref={scrollRef} style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
+        {messages.length === 0 && (
+          <View style={{ alignItems: "center", marginTop: 24 }}>
+            <Sparkles size={26} color={COLORS.faint} style={{ marginBottom: 10 }} />
+            <Text style={{ fontSize: 14, color: COLORS.faint, textAlign: "center", paddingHorizontal: 30, marginBottom: 16, lineHeight: 20 }}>
+              Ask about classes, activities, testing, or just talk through what's on your mind about school.
+            </Text>
+            <View style={{ width: "100%", gap: 8, paddingHorizontal: 8 }}>
+              {[
+                `Find clubs near ${profile.school || profile.city} that fit my interests`,
+                `What volunteer opportunities are near ${profile.city}?`,
+                "What should I be doing right now for my grade?",
+              ].map((p) => (
+                <TouchableOpacity key={p} onPress={() => send(p)} style={styles.promptChip}>
+                  <Text style={styles.promptChipText}>{p}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {messages.map((m, i) => (
+          <View
+            key={i}
+            style={{
+              alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+              maxWidth: "85%",
+              backgroundColor: m.role === "user" ? COLORS.coral : COLORS.white,
+              borderWidth: m.role === "user" ? 0 : 1,
+              borderColor: COLORS.border,
+              borderRadius: 16,
+              padding: 12,
+              marginBottom: 10,
+            }}
+          >
+            {m.role === "user" ? (
+              <Text style={{ color: COLORS.white, fontSize: 14.5, lineHeight: 20 }}>{m.content}</Text>
+            ) : (
+              <SimpleMarkdown text={m.content} />
+            )}
+          </View>
+        ))}
+
+        {loading && (
+          <View style={{ alignSelf: "flex-start", backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.border, borderRadius: 16, padding: 12 }}>
+            <Text style={{ color: COLORS.faint, fontSize: 14 }}>thinking...</Text>
+          </View>
+        )}
+      </ScrollView>
+
+      <View style={{ flexDirection: "row", gap: 8, padding: 14, borderTopWidth: 1, borderTopColor: COLORS.border }}>
+        <TextInput
+          value={input}
+          onChangeText={setInput}
+          onSubmitEditing={() => send()}
+          placeholder="Type a question..."
+          placeholderTextColor={COLORS.faint}
+          style={[styles.input, { flex: 1 }]}
+        />
+        <TouchableOpacity onPress={() => send()} disabled={loading} style={styles.sendButton}>
+          <Send size={18} color={COLORS.white} />
+        </TouchableOpacity>
+      </View>
+    </KeyboardAvoidingView>
+  );
+}
+
+// ============ Root App ============
+export default function App() {
+  const [profile, setProfile] = useState(null);
+  const [roadmapData, setRoadmapData] = useState(null); // { roadmap, summary } once generated
+  const [tab, setTab] = useState("trail");
+  const [completed, setCompleted] = useState(new Set());
+  const [selectedMilestone, setSelectedMilestone] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [pendingPrompt, setPendingPrompt] = useState(null);
+
+  if (!profile) {
+    return <Onboarding onComplete={setProfile} />;
+  }
+
+  if (!roadmapData) {
+    return <ResearchScreen profile={profile} onComplete={setRoadmapData} />;
+  }
+
+  return (
+    <SafeAreaView style={styles.screenBase}>
+      <View style={{ flex: 1 }}>
+        {tab === "trail" ? (
+          <TrailMap
+            profile={profile}
+            completed={completed}
+            setCompleted={setCompleted}
+            setSelectedMilestone={setSelectedMilestone}
+            roadmap={roadmapData.roadmap}
+            summary={roadmapData.summary}
+          />
+        ) : (
+          <MentorChat
+            profile={profile}
+            messages={messages}
+            setMessages={setMessages}
+            pendingPrompt={pendingPrompt}
+            clearPendingPrompt={() => setPendingPrompt(null)}
+          />
+        )}
+        <MilestoneSheet
+          milestone={selectedMilestone}
+          completed={completed}
+          setCompleted={setCompleted}
+          onClose={() => setSelectedMilestone(null)}
+          onAskMentor={(title) => {
+            setSelectedMilestone(null);
+            setTab("chat");
+            setPendingPrompt(`Can you help me think through this: "${title}"?`);
+          }}
+        />
+      </View>
+
+      <View style={styles.tabBar}>
+        {[
+          { key: "trail", label: "Trail", Icon: MapIcon },
+          { key: "chat", label: "Mentor", Icon: MessageCircle },
+        ].map(({ key, label, Icon }) => (
+          <TouchableOpacity key={key} onPress={() => setTab(key)} style={styles.tabButton}>
+            <Icon size={20} color={tab === key ? COLORS.coral : COLORS.faint} />
+            <Text style={[styles.tabLabel, { color: tab === key ? COLORS.coral : COLORS.faint }]}>{label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    </SafeAreaView>
+  );
+}
+
+// ============ Styles ============
+
+const styles = StyleSheet.create({
+  screenBase: {
+    flex: 1,
+    backgroundColor: COLORS.bg,
+  },
+  h1: {
+    fontSize: 26,
+    fontWeight: "700",
+    color: COLORS.ink,
+    marginBottom: 4,
+  },
+  h2: {
+    fontSize: 19,
+    fontWeight: "700",
+    color: COLORS.ink,
+    marginBottom: 4,
+  },
+  sub: {
+    fontSize: 15,
+    color: COLORS.muted,
+    marginBottom: 20,
+    lineHeight: 21,
+  },
+  eyebrow: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontWeight: "600",
+    letterSpacing: 1,
+    marginBottom: 4,
+  },
+  detailText: {
+    fontSize: 14.5,
+    color: COLORS.muted,
+    lineHeight: 21,
+    marginBottom: 20,
+  },
+  input: {
+    width: "100%",
+    paddingVertical: 13,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.borderStrong,
+    fontSize: 15,
+    backgroundColor: COLORS.white,
+    color: COLORS.ink,
+  },
+  choiceButton: {
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: COLORS.borderStrong,
+    backgroundColor: COLORS.white,
+  },
+  choiceButtonText: {
+    fontSize: 15,
+    color: COLORS.ink,
+  },
+  primaryButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: COLORS.coral,
+  },
+  primaryButtonText: {
+    color: COLORS.white,
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  milestoneCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 8,
+  },
+  milestoneText: {
+    fontSize: 14.5,
+    color: COLORS.ink,
+    fontWeight: "500",
+    flex: 1,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(26,26,46,0.4)",
+    justifyContent: "flex-end",
+  },
+  modalSheet: {
+    backgroundColor: COLORS.bg,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 22,
+    paddingBottom: 32,
+  },
+  modalHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: COLORS.borderStrong,
+    alignSelf: "center",
+    marginBottom: 18,
+  },
+  promptChip: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.white,
+  },
+  promptChipText: {
+    fontSize: 13.5,
+    color: COLORS.ink,
+  },
+  sendButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: COLORS.coral,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tabBar: {
+    flexDirection: "row",
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    backgroundColor: COLORS.bg,
+  },
+  tabButton: {
+    flex: 1,
+    alignItems: "center",
+    gap: 4,
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  tabLabel: {
+    fontSize: 11.5,
+    fontWeight: "600",
+  },
+});
